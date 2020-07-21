@@ -1,0 +1,6 @@
+data/**
+logs/**
+pickles/**
+.ipynb_checkpoints/**
+!**/.keep
+spider_net/__pycache__/*

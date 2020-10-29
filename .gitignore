@@ -5,4 +5,7 @@ pickles/**
 !**/.keep
 spider_net/__pycache__/*
 figures/**
-**.ipynb
+**/*.ipynb
+!spider-nas.ipynb
+!monitoring.ipynb
+*.onyx

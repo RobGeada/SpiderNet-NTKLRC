@@ -28,6 +28,8 @@ def color_create():
         'SE_16': {'hex': '#d44c8eff'},
         'Sep_Conv_3x3': {'hex': '#961696ff'},
         'Sep_Conv_5x5': {'hex': '#761676ff'},
+        'Sep_Conv_3x3/8': {'hex': '#ffd000ff'},
+        'Sep_Conv_5x5g/8': {'hex': '#ffb000ff'},
         'ISC_3x3': {'hex': '#ff87f5ff'},
         'ISC_5x5': {'hex': '#d100c0ff'},
         'Sep_Conv_7x7': {'hex': '#561656ff'},

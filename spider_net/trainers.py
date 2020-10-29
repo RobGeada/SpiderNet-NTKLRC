@@ -35,45 +35,6 @@ def extract_curr_lambdas(comp_lambdas, epoch, tries):
     return out
 
 
-# === CUSTOM LOSS FUNCTIONS ============================================================================================
-dummy_zero = torch.tensor([0.], device='cuda')
-
-
-def compression_loss(model, comp_lambda, comp_ratio, item_output=False):
-    # edge pruning
-    if comp_lambda['edge']>0:
-        prune_sizes = []
-        for cell in model.cells:
-            edge_pruners = [op.pruner.mem_size*torch.clamp(op.pruner.sg(),0.,1.) if op.pruner else dummy_zero\
-                                for key, edge in cell.edges.items() for op in edge.ops]
-            prune_sizes += [torch.sum(torch.cat(edge_pruners)).view(-1)]
-        edge_comp_ratio = torch.div(torch.cat(prune_sizes), model.edge_sizes)
-        edge_comp = torch.norm(comp_ratio - edge_comp_ratio)
-        edge_loss = comp_lambda['edge'] * edge_comp
-    else:
-        edge_loss = 0
-
-    # input pruning
-    if comp_lambda['input']>0:
-        input_sizes = []
-        for cell in model.cells:
-            input_pruners = [torch.clamp(pruner.sg(),0,1) if pruner else dummy_zero for pruner in cell.input_handler.pruners]
-            input_sizes += [torch.sum(torch.cat(input_pruners)).view(-1)]
-        input_comp_ratio = torch.div(torch.cat(input_sizes), model.input_p_tot)
-        input_comp = torch.norm(1/model.input_p_tot - input_comp_ratio)
-        input_loss = comp_lambda['input']*input_comp
-    else:
-        input_loss = 0
-
-    loss = edge_loss+input_loss
-    if item_output:
-        ecr = 0 if edge_loss == 0 else torch.mean(edge_comp_ratio).item()
-        icr = 0 if input_loss == 0 else torch.mean(input_comp_ratio).item()
-        return loss, [ecr,icr], [edge_loss,input_loss]
-    else:
-        return loss, [None,None], [None,None]
-
-
 # === PERFORMANCE METRICS ==============================================================================================
 def top_k_accuracy(output, target, top_k):
     if len(output.shape)==2:
@@ -139,29 +100,37 @@ def train(model, device, **kwargs):
             kwargs['optimizer'].zero_grad()
 
         verbose = kwargs['epoch'] == 0 and batch_idx == 0
-        output = model.forward(data, model.drop_prob, verbose=verbose)
-        loss = kwargs['criterion'](output, target)
+        outputs = model.forward(data, model.drop_prob, verbose=verbose)
+        model.data_index += 1
+
+        def loss_f(x): return kwargs['criterion'](x, target)
+        losses = [loss_f(output) for output in outputs[:-1]]
+        final_loss = loss_f(outputs[-1])
+        loss = final_loss + .2 * sum(losses)
 
         # end train step ======================
         loss = loss/multiplier
         loss.backward()
-        model.compile_grads()
+
+        model.compile_growth_factors()
+        model.compile_pruner_stats()
         if (batch_idx % multiplier == 0) or (batch_idx == len(train_loader) - 1):
             kwargs['optimizer'].step()
-        corr, div = top_k_accuracy(output, target, top_k=kwargs.get('top_k', [1]))
+        corr, div = top_k_accuracy(outputs[-1], target, top_k=kwargs.get('top_k', [1]))
         corrects = corrects + corr
         divisor += div
 
         # mid epoch updates ===================
         if print_or_end:
+            cache = cache_stats(human_readable=False)
             prog_str = 'Train Epoch: {:<3} [{:<6}/{:<6} ({:.0f}%)]\t'.format(
                 kwargs['epoch'],
                 (batch_idx + 1) * len(data),
                 len(train_loader.dataset),
                 100. * (batch_idx + 1) / len(train_loader))
             prog_str += 'Per Epoch: {:<7}, '.format(show_time((time.time() - batch_start) * len(train_loader)))
-            prog_str += 'Alloc: {}, '.format(cache_stats(spacing=False))
-            prog_str += 'Data T: {:<6.3f}, Op T: {:<6.3f}'.format(t_cumul_data,t_cumul_ops)
+            prog_str += 'Alloc: {}, '.format(sizeof_fmt(cache, spacing=True))
+            prog_str += 'Data T: {:<6.3f}, Op T: {:<6.3f}'.format(t_cumul_data, t_cumul_ops)
             jn_print(prog_str, end="\r", flush=True)
 
         if batch_idx > kwargs.get('kill_at', np.inf):
@@ -171,6 +140,11 @@ def train(model, device, **kwargs):
 
     # === output ===============
     jn_print(prog_str)
+    for i, c, cell in model.all_cells():
+        print("== {},{} ==".format(c, i))
+        for key, edge in cell.edges.items():
+            print(" ", key, edge.get_growth())
+
     accuracy_string("Train", corrects, divisor, epoch_start, top_k, comp_ratio=None)
 
 
@@ -183,20 +157,25 @@ def test(model, device, top_k=[1]):
 
     # === test epoch =========================
     model.eval()
+    outputs, targets, metas = [], [], []
     with torch.no_grad():
         for batch_idx, data in enumerate(test_loader):
             if len(data)==3:
-                data, _, target = data
+                data, metadata, target = data
             else:
                 data, target = data
+                metadata = None
             data, target = data.to(device), target.to(device)
-            output = model.forward(data, drop_prob=0)
+            output = model.forward(data, drop_prob=0)[-1]
             corr, div = top_k_accuracy(output, target, top_k=top_k)
             corrects = corrects + corr
+            outputs.append(torch.argmax(output, 1).tolist())
+            targets.append(target)
+            metas.append(metadata)
             divisor += div
 
     # === format results =====================
-    return accuracy_string("Last Tower Test ", corrects, divisor, t_start, top_k, return_str=True)
+    return accuracy_string("Last Tower Test ", corrects, divisor, t_start, top_k, return_str=True), outputs, targets, metas
 
 
 def size_test(model, verbose=False):
@@ -208,10 +187,14 @@ def size_test(model, verbose=False):
         criterion = nn.CrossEntropyLoss()
 
         model.train()
-        for batch_idx, (data, target) in enumerate(model.data[0]):
+        for batch_idx, data in enumerate(model.data[0]):
+            if len(data)==3:
+                data, _, target = data
+            else:
+                data, target = data
             data, target = data.to(device), target.to(device)
             out = model.forward(data, drop_prob=.3, verbose=(verbose and batch_idx == 0))
-            loss = criterion(out, target)
+            loss = criterion(out[-1], target)
             loss.backward()
             if batch_idx > 2:
                 break
@@ -223,7 +206,7 @@ def size_test(model, verbose=False):
     except RuntimeError as e:
         if 'CUDA out of memory' in str(e):
             overflow = True
-            model = model.to(torch.device('cpu'))
+            #model = model.to(torch.device('cpu'))
             model.zero_grad()
             size = cache_stats(False)/(1024**3)
             clean(verbose=False)
@@ -238,9 +221,8 @@ def size_test(model, verbose=False):
     return size, overflow
 
 
-def sp_size_test(n, e_c, add_pattern, prune=True,**kwargs):
-    with open("pickles/size_test_in.pkl","wb") as f:
-        pkl.dump([n, e_c, add_pattern, prune, kwargs],f)
+def sp_size_test(model):
+    torch.save(model, "pickles/sp_size_test.pt")
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sizer.py')
     python = get_python3()
     try:
@@ -250,22 +232,19 @@ def sp_size_test(n, e_c, add_pattern, prune=True,**kwargs):
         print(python, path)
         print(e.output.decode('utf8'))
         raise e
-    if kwargs.get('print_model',False):
-        print(s.decode('utf8'))
-    with open("pickles/size_test_out.pkl","rb") as f:
+    with open("pickles/size_test_out.pkl", "rb") as f:
         return pkl.load(f)
 
 
 # === FULL TRAINING HANDLER=============================================================================================
 def full_train(model, kwargs):
     # === learning handlers ==================
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(kwargs['device'])
+
     optimizer = optim.SGD([{'params': model.parameters(), 'lr':kwargs['lr_schedule']['lr_max'], 'key': 0}],
                           momentum=.9,
                           weight_decay=3e-4)
     lr_schedulers = {0: LRScheduler(kwargs['lr_schedule']['T'], kwargs['lr_schedule']['lr_max'])}
-
-
     model.jn_print, model.log_print = jn_print, log_print
     print("=== Training {} ===".format(model.model_id))
 
@@ -275,45 +254,39 @@ def full_train(model, kwargs):
     training_logger.info(model.creation_string())
     criterion = nn.CrossEntropyLoss()
 
-    if torch.cuda.is_available():
-        model.cuda()
-        criterion.cuda()
-
     # === run n epochs =======================
     epochs = kwargs['lr_schedule']['T']
-    met_thresh = False
+    model.data_index = 0
+    last_mutation = -1
+
     for epoch in range(0, epochs):
         training_logger.info("=== EPOCH {} ===".format(epoch))
 
         # train =========================
-        train(model, device, criterion=criterion, optimizer=optimizer, epoch=epoch, **kwargs)
+        train(model, criterion=criterion, optimizer=optimizer, epoch=epoch, **kwargs)
+        out_str, outputs, targets, metas = test(model, kwargs['device'], top_k=kwargs.get('top_k', [1]))
+        log_print(out_str)
+        model.epoch += 1
+        model.save_analytics()
 
         # prune ==============================
         if model.prune:
-            model.eval()
-            edge_pruners = [op.pruner for cell in model.cells \
-                            for key, edge in cell.edges.items() for op in edge.ops if op.pruner]
-            [pruner.track_gates() for pruner in edge_pruners]
-            model.deadhead(kwargs['nas_schedule']['prune_interval'])
+            model.deadhead(kwargs['mod_interval']*len(model.data[0]))
 
         # mutate
-        if (epoch+1) % kwargs['mutate_schedule']['mutate_interval'] == 0 and epoch>0:
-            #display(model.plot_network(color_by='grad'))
-            mutations, new_edges = model.mutate(n=kwargs['mutate_schedule']['n_mutations'])
+        if epoch and (epoch-last_mutation) % kwargs['mod_interval'] == 0 and kwargs.get('mutate', True):
+            mutations, new_edges = model.mutate(n=kwargs['n_mutations'])
+            if len(mutations):
+                last_mutation = epoch
             print("Performed {} mutations: {}".format(len(mutations), mutations))
             lr_schedulers[epoch] = LRScheduler(epochs - epoch, kwargs['lr_schedule']['lr_max'])
             new_params = [param for edge in new_edges for param in edge.parameters()]
             optimizer.add_param_group({'params': new_params,
                                        'lr': kwargs['lr_schedule']['lr_max'],
                                        'key': epoch})
-
-        # test ===============================
-        log_print(test(model, device, top_k=kwargs.get('top_k', [1])))
-        print()
+            print()
 
         # anneal =============================
         set_lr(optimizer, lr_schedulers)
 
-        if met_thresh and epochs is None:
-            break 
-    return met_thresh
+    return outputs, targets, metas

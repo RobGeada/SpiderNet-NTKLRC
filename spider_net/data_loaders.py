@@ -4,6 +4,9 @@ import os
 
 import torch
 from torchvision import datasets, transforms
+from data.gen_language_data import load_language_data
+from data.gen_multnist import load_multnist_data
+from data.gen_dolphin_data import load_dolphin_data
 
 # === set seeds ===
 '''
@@ -56,7 +59,31 @@ def load_data(batch_size, dataset, metadata=None):
     download = dataset not in os.listdir(data_path)
 
     # dataset configuration
-    if dataset == 'CIFAR10':
+    if dataset == 'MultNIST':
+        return load_multnist_data(batch_size)
+    elif dataset == 'Language':
+        return load_language_data()
+    elif dataset == 'Dolphin':
+        train_data, test_data, MEAN, STD = load_dolphin_data()
+        train_xs, train_ys = train_data
+        test_xs, test_idx, test_ys = test_data
+        
+        train_transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            Cutout(mask_size=16, p=.5, mask_color=MEAN),
+            transforms.ToTensor(),
+            transforms.Normalize(MEAN/255, STD/255)])
+        test_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(MEAN/255, STD/255)])
+        train_xs = [train_transform(x) for x in train_xs]
+        test_xs = [test_transform(x) for x in test_xs]
+        
+        train_data = list(zip(train_xs, train_ys))
+        test_data = list(zip(test_xs, test_idx, test_ys))
+        del train_xs, train_ys, test_xs, test_ys, test_idx
+        
+    elif dataset == 'CIFAR10':
         MEAN = [0.49139968, 0.48215827, 0.44653124]
         STD  = [0.24703233, 0.24348505, 0.26158768]
 
@@ -129,9 +156,14 @@ def load_data(batch_size, dataset, metadata=None):
     test_loader = torch.utils.data.DataLoader(test_data,
                                               batch_size=batch_size,
                                               shuffle=False)
+    del train_data, test_data
         
     # get/load dataset metadata
-    for img, target in train_loader:
+    for val in train_loader:
+        if len(val) == 2:
+            img, target = val
+        elif len(val) == 3:
+            img, info, target = val
         data_shape = img.shape
         break
 

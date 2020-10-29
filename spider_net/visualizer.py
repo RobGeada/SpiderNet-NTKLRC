@@ -68,8 +68,8 @@ def scrape(prog=False):
                 rows.append(row)
             row = {}
         if 'Adjusting lr' in line:
-            lrs = line.split("to [")[1].split("]\x1b[0m")[0]
-            row['Learning Rate'] = [float(x.strip()) for x in lrs.split(",")]
+            #lrs = line.split("to [")[1].split("]\x1b[0m")[0]
+            row['Learning Rate'] = None#[float(x.strip()) for x in lrs.split(",")]
         if 'Target Comp' in line:
             target = float(line.split(":")[1].split(",")[0])
             if 'Aim' in line:
@@ -403,7 +403,7 @@ class TrainAnimator:
                                                                                           rec_max,
                                                                                           rec_arg_max)
                 yrange = 100 - min(curr_run['LT Test Top-1'][-10:])
-                self.axes[0].text(-30, 100 + yrange / 15, text, fontsize=8, fontfamily='monospace')
+                self.axes[0].text(-30, 101 + yrange / 15, text, fontsize=8, fontfamily='monospace')
                 ys = curr_run['LT Test Top-1']
                 xs = list(curr_run['Epochs'])[:len(ys)]
                 label = "{} {}: {}".format(curr_run['ID'],curr_run['Start Time'],max(curr_run['LT Test Top-1'])) 
@@ -432,6 +432,9 @@ class TrainAnimator:
                 self.axes[0].set_yticks(np.arange(ax_min, ax_max, div))
                 self.axes[0].tick_params(axis='both', which='major', labelsize=8)
                 self.curr_epoch = epoch
+                plt.savefig('/home/campus.ncl.ac.uk/b6070424/Dropbox/PhD/monitoring.png',
+                            facecolor="#263238",
+                            bbox_inches="tight")
 
         prog = scrape(prog=True)
         if prog != self.prog:
@@ -503,11 +506,13 @@ class TrainPlot:
         gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1 / 15])
         axes = [plt.subplot(g) for g in gs]
 
-        plt.subplots_adjust(left=.05, right=.95, top=.88, bottom=.05, hspace=.15)
+        plt.subplots_adjust(left=.05, right=.95, top=.88, bottom=.05, hspace=.5)
         animator = TrainAnimator(axes=axes, marker=self.marker)
         ani = animation.FuncAnimation(fig, animator.animate, interval=1000)
+
         plt.draw()
         plt.pause(.001)
+
         if resize:
             # this is a dumb thing for my specific computer
             hotkey('winleft', 'ctrl', '6')

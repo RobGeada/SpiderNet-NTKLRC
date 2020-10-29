@@ -39,7 +39,6 @@ if __name__ == '__main__':
                 out = op_f(input_tensor)
                 tensors.append([op_f,out])
                 sizes.append(sizeof_fmt(mem_stats(False) - sm))
-            #print(op, sizes)
             end_mem = (mem_stats(False) - start_mem)/(trials-1)
             del tensors
             clean(verbose=False)
@@ -48,35 +47,8 @@ if __name__ == '__main__':
         pp.pprint(op_mems)
     else:
         # get size of entire model
-        with open("pickles/size_test_in.pkl", "rb") as f:
-            [n, e_c, add_pattern, prune, kwargs] = pkl.load(f)
-        data, dim = load_data(kwargs['batch_size'], kwargs['dataset']['name'])
-        model = Net(dim=dim,
-                    classes=kwargs['dataset']['classes'],
-                    scale=kwargs['scale'],
-                    patterns=kwargs['patterns'],
-                    num_patterns=n,
-                    total_patterns=kwargs['total_patterns'],
-                    random_ops={'e_c': e_c, 'i_c': 1.},
-                    nodes=kwargs['nodes'],
-                    depth=kwargs['depth'],
-                    drop_prob=.3,
-                    lr_schedule=kwargs['lr_schedule'],
-                    prune=True)
-        
-        model.data = data
-
-        if kwargs.get('remove_prune') is True:
-            model.remove_pruners(remove_input=True, remove_edge=True)
-            model.add_pattern(full_ops=True)
-            print(model)
-        elif add_pattern:
-            model.add_pattern(prune=prune)
-            print(model)
-        if kwargs.get('detail', False):
-            model.detail_print()
-        if kwargs.get('print_model', False):
-            print(model)
-        out = size_test(model, verbose=kwargs.get('verbose', False))
+        model = torch.load('pickles/sp_size_test.pt')
+        out = size_test(model, verbose=False)
         with open("pickles/size_test_out.pkl", "wb") as f:
             pkl.dump(out, f)
+

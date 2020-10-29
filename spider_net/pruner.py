@@ -5,44 +5,45 @@ import numpy as np
 from torch.autograd import Variable
 
 from spider_net.ops import *
+from spider_net.helpers import width_mod, general_num_params
 
 
 # === BASE PRUNER =================================================================================
 class Pruner(nn.Module):
-    def __init__(self, m=1e5, mem_size=0, init=None):
+    def __init__(self, m=1e9, mem_size=0, init=None):
         super().__init__()
         if init is None:
             init = .01
-        if init is 'off':
+        elif init is 'off':
             init = -1.
+        elif type(init) is int:
+            init = float(init)
+        self.init = init
         self.mem_size = mem_size
         self.weight = nn.Parameter(torch.tensor([init]))
         self.m = m
-        
-        self.gate = lambda w: w>0
-        self.saw = lambda w: (self.m * w - torch.floor(self.m * w)) / self.m
-        self.weight_history = []
-        self.actual_weight_vals = []
-        self.weight_history_history = []
+        self.weight_history = np.array([])
 
     def __str__(self):
-        return 'Pruner: M={},N={}'.format(self.M, self.channels)
+        return 'Pruner'
+
+    def reset_parameters(self):
+        self.weight = nn.Parameter(torch.tensor([self.init]))
+        self.weight_history = np.array([])
 
     def num_params(self):
         # return number of differential parameters of input model
         return sum([np.prod(p.size()) for p in filter(lambda p: p.requires_grad, self.parameters())])
 
     def track_gates(self):
-        self.actual_weight_vals.append(self.weight.item())
-        self.weight_history.append(self.gate(self.weight).item())
+        self.weight_history = np.append(self.weight_history, self.gate().item())
 
-    def get_deadhead(self, deadhead_epochs, verbose=False):
-        if len(self.weight_history)<deadhead_epochs:
+    def get_deadhead(self, prune_interval, verbose=False):
+        if len(self.weight_history) < prune_interval:
             return False
-        deadhead = not any(self.weight_history[-deadhead_epochs:])
+        deadhead = (prune_interval * .25) > sum(self.weight_history[-prune_interval:])
         if deadhead:
             self.switch_off()
-        self.weight_history_history+=self.weight_history
         
         if verbose:
             print(self.weight_history, deadhead)
@@ -51,9 +52,23 @@ class Pruner(nn.Module):
     def switch_off(self):
         for param in self.parameters():
             param.requires_grad = False
-    
+
+    def clamp(self):
+        pre = self.weight.item()
+        bound = self.init * 5
+        if self.weight > bound:
+            self.weight.data = self.weight.data * bound/self.weight.data
+        elif self.weight < -bound:
+            self.weight.data = self.weight.data * -bound/self.weight.data
+            #2print(pre, self.weight.item())
+            
+    def gate(self):
+        return self.weight > 0
+        #return torch.sigmoid(self.m * self.weight)
+
     def sg(self):
-        return self.saw(self.weight) + self.gate(self.weight)
+        saw = (self.m * self.weight - torch.floor(self.m * self.weight)) / self.m
+        return saw + self.gate()
 
     def forward(self, x):
         return self.sg() * x
@@ -61,7 +76,7 @@ class Pruner(nn.Module):
 
 # === OP + PRUNER COMBO =================================================================================
 class PrunableOperation(nn.Module):
-    def __init__(self, op_function, name, mem_size, c_in, stride, pruner_init=None, prune=True):
+    def __init__(self, op_function, name, mem_size, c_in, stride, metric, start_idx=0, pruner_init=None, prune=True):
         super().__init__()
         self.op_function = op_function
         self.stride = stride
@@ -74,23 +89,35 @@ class PrunableOperation(nn.Module):
         if pruner_init is 'off':
             self.zero = True
             self.pruner.switch_off()
+        self.analytics = {'pruner': [None]*start_idx,
+                          'pruner_sg': [None] * start_idx,
+                          'grad': [None]*start_idx}
 
     def track_gates(self):
-        self.pruner.track_gates()
+        if not self.zero:
+            self.pruner.track_gates()
 
-    def get_grad(self):
-        if self.pruner.weight.grad is None:
-            return 0
-        else:
-            return abs(self.pruner.weight.grad.item())
+    def get_growth_factor(self):
+        return self.metric(self)
 
-    def deadhead(self,prune_interval):
+    def deadhead(self, prune_interval):
         if self.zero or not self.pruner.get_deadhead(prune_interval):
             return 0
         else:
             self.op = Zero(self.stride)
             self.zero = True
             return 1
+
+    def log_analytics(self):
+        if not self.zero:
+            weight = self.pruner.weight
+            self.analytics['pruner'].append(weight.item())
+            self.analytics['pruner_sg'].append(self.pruner.sg().item())
+            self.analytics['grad'].append(weight.grad.item() if weight.grad else None)
+        else:
+            self.analytics['pruner'].append(None)
+            self.analytics['pruner_sg'].append(None)
+            self.analytics['grad'].append(None)
 
     def __str__(self):
         return self.name
@@ -108,16 +135,25 @@ class PrunableTower(nn.Module):
         self.in_size = in_size
         self.out_size = out_size
         self.position = position
+        self.analytics = {'pruner': [],
+                          'pruner_sg': [],
+                          'grad': []}
         self.pruner = Pruner()
 
-        self.op = nn.Sequential(
+        self.ops = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             NNView(),
             nn.Linear(self.in_size[1], self.out_size)
         )
 
+    def track_gates(self):
+        weight = self.pruner.weight
+        self.analytics['pruner'].append(weight.item())
+        self.analytics['pruner_sg'].append(self.pruner.sg().item())
+        self.analytics['grad'].append(weight.grad.item() if weight.grad else None)
+
     def forward(self, x):
-        return self.pruner(self.op(x))
+        return self.ops(x)
 
 
 

@@ -4,3 +4,5 @@ pickles/**
 .ipynb_checkpoints/**
 !**/.keep
 spider_net/__pycache__/*
+figures/**
+**.ipynb

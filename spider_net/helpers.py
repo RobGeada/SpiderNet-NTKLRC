@@ -29,20 +29,28 @@ def pretty_size(size):
 
 
 # Code by James Bradbury - https://github.com/jekbradbury
-def print_obj_tree(min_elements=None):
+def print_obj_tree(t_type, comparison=None, verbose=True):
     obj_list = [obj for obj in gc.get_objects() if torch.is_tensor(obj) or isinstance(obj, torch.autograd.Variable)]
+    out = []
     for obj in obj_list:
-        if min_elements and obj.nelement() < min_elements: continue
         referrers = [r for r in gc.get_referrers(obj) if r is not obj_list]
-        print(f'{id(obj)} {obj.__class__.__qualname__} of size {tuple(obj.size())} with references held by:')
-        for referrer in referrers:
-            if torch.is_tensor(referrer) or isinstance(referrer, torch.autograd.Variable):
-                info_str = f' of size {tuple(referrer.size())}'
-            elif isinstance(referrer, dict):
-                info_str = ' in which its key is ', [k for k, v in referrer.items() if v is obj]
-            else:
-                info_str = ''
-            print(f'  {id(referrer)} {referrer.__class__.__qualname__}{info_str}')
+        out_str = f'{id(obj)} {obj.__class__.__qualname__} of size {tuple(obj.size())} with references held by:'
+        if comparison is None or out_str not in comparison:
+            if t_type in out_str:
+                out.append(out_str)
+                if verbose:
+                    print(out_str)
+                for referrer in referrers:
+                    if torch.is_tensor(referrer) or isinstance(referrer, torch.autograd.Variable):
+                        info_str = f' of size {tuple(referrer.size())}'
+                    elif isinstance(referrer, dict):
+                        info_str = ' in which its key is ', [k for k, v in referrer.items() if v is obj]
+                    else:
+                        info_str = ''
+                    str2 = f'  {id(referrer)} {referrer.__class__.__qualname__}{info_str}'
+                    if verbose:
+                        print(str2)
+    return out_str
 
 
 def size_obj(obj):
@@ -97,11 +105,9 @@ def cell_dims(data_shape, scale, patterns, n):
             if any(x == 0 for x in size) or i>n:
                 return sizes
             if i and 'r' in cell:
+                print("a")
                 sizes.add(tuple(size+[1]))
                 size = list(channel_mod(size, size[1] * 2))
-                if size[2]>1:
-                    sizes.add(tuple(size+[2]))
-                size = list(width_mod(size, 2))
             else:
                 sizes.add(tuple(size+[1]))
 
@@ -244,7 +250,7 @@ def sizeof_fmt(num, spacing=True, suffix='B'):
 def cache_stats(human_readable=True, spacing=True):
     # returns current allocated torch memory
     if human_readable:
-        return sizeof_fmt(torch.cuda.memory_cached(),spacing)
+        return sizeof_fmt(torch.cuda.memory_cached(), spacing)
     else:
         return int(torch.cuda.memory_cached())
 

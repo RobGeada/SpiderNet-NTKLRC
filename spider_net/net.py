@@ -5,12 +5,13 @@ import numpy as np
 from graphviz import Digraph
 import random
 import matplotlib.pyplot as plt
+import shap
 
 from spider_net.ops import *
 from spider_net.chroma import color_create
 from spider_net.pruner import PrunableOperation, PrunableTower
 from spider_net.helpers import *
-from spider_net.trainers import size_test
+from spider_net.trainers import size_test, top_k_accuracy
 
 arrow_char = "↳"
 
@@ -28,21 +29,21 @@ def decode(edge, s="->"):
 
 
 class Edge(nn.Module):
-    def __init__(self, ops, dim, op_size, name, mut_metric, data_index=0, lineage=None, mutate_flag=False):
+    def __init__(self, ops, dim, op_size, name, data_index=0, lineage=None):
         super().__init__()
         self.operation_set = commons if ops is None else ops
         self.dim = dim
 
         self.op_sizes = op_size
-        self.post_splittable = dim[-1] == 1
         self.name = name
         self.data_index = data_index
-        self.mutate_flag = mutate_flag
-        self.growth_factor = []
+        self.growth_factor = {'weight': [], 'grad': []}
+        self.shap = None
         self.lineage = [] if lineage is None else lineage
-        self.mut_metric = mut_metric
 
         self.ops = []
+        self.shap_identity = MinimumIdentity(self.dim[1], self.dim[1], stride=self.dim[-1])
+
         for i, (key, op) in enumerate(self.operation_set.items()):
             prune_op = PrunableOperation(op_function=op,
                                          name=key,
@@ -51,7 +52,6 @@ class Edge(nn.Module):
                                          stride=self.dim[-1],
                                          pruner_init=.01,
                                          prune=True,
-                                         metric=self.mut_metric['metric'],
                                          start_idx=self.data_index)
             self.ops.append(prune_op)
         self.ops = nn.ModuleList(self.ops)
@@ -67,32 +67,59 @@ class Edge(nn.Module):
         self.num_ops -= dhs
         if self.num_ops == 0:
             self.norm = None
-            self.zero = Zero(stride=self.stride)
+            self.zero = Zero(stride=self.dim[-1])
         return dhs
 
     def get_growth(self):
-        if len(self.growth_factor)==0:
-            return np.inf
+        all_none_grad = all([x is None for x in self.growth_factor['grad']])
+        all_none_weight = all([x is None for x in self.growth_factor['weight']])
+        if len(self.growth_factor['weight']) == 0 or all_none_grad or all_none_weight:
+            return {
+                'std_weight': None,
+                'std_grad': None,
+                'mean_weight':None,
+                'mean_grad': None,
+                'abs_std_weight': None,
+                'abs_std_grad': None,
+                'abs_mean_weight': None,
+                'abs_mean_grad': None,
+                'shap': None
+            }
         else:
-            return self.mut_metric['agg'](self.growth_factor)
+            return {
+                'std_weight': np.std(self.growth_factor['weight']),
+                'std_grad': np.std(self.growth_factor['grad']),
+                'mean_weight': np.mean(self.growth_factor['weight']),
+                'mean_grad': np.mean(self.growth_factor['grad']),
+                'abs_std_weight': np.std(np.abs(self.growth_factor['weight'])),
+                'abs_std_grad': np.std(np.abs(self.growth_factor['grad'])),
+                'abs_mean_weight': np.mean(np.abs(self.growth_factor['weight'])),
+                'abs_mean_grad': np.mean(np.abs(self.growth_factor['grad'])),
+                'shap': self.shap
+            }
 
+    def reset_growth_factor(self):
+        self.growth_factor = {'weight': [], 'grad': []}
 
     def get_edge_size(self):
-        return sum([op.pruner.mem_size for op in self.ops if not op.zero])
+        return sum([op.pruner.mem_size for op in self.ops])
 
     def __repr__(self):
         return "Edge {}".format(self.name, self.op_sizes)
 
-    def forward(self, x, drop_prob):
-        if self.num_ops:
-            outs = [op(x) if op.name in ['Identity', 'Zero'] else drop_path(op(x), drop_prob) for op in self.ops]
-            return self.norm(sum(outs))
+    def forward(self, x, drop_prob, omit_this_edge=0.):
+        if not omit_this_edge:
+            if self.num_ops:
+                outs = [op(x) if op.name in ['Identity', 'Zero'] else drop_path(op(x), drop_prob) for op in self.ops]
+                return self.norm(sum(outs))
+            else:
+                return self.zero(x)
         else:
-            return self.zero(x)
+            return self.shap_identity(x)
 
 
 class Cell(nn.Module):
-    def __init__(self, cell_idx, input_dim, op_sizes, mut_metric, data_index=0):
+    def __init__(self, cell_idx, input_dim, op_sizes,  data_index=0):
         super().__init__()
 
         self.name = cell_idx
@@ -103,12 +130,11 @@ class Cell(nn.Module):
         self.op_keys = list(self.op_sizes.keys())
 
         self.edges = nn.ModuleDict()
-        self.edges[encode(0, 1)] = Edge(None,
-                                        list(self.op_sizes.keys())[0],
-                                        self.op_sizes,
-                                        self.edge_counter(),
-                                        mut_metric,
-                                        self.data_index)
+        self.edges[encode(0, 1)] = Edge(ops=None,
+                                        dim=list(self.op_sizes.keys())[0],
+                                        op_size=self.op_sizes,
+                                        name=self.edge_counter(),
+                                        data_index=self.data_index)
         self.output_node = 0
         self.forward_iterator = []
         self.set_op_order()
@@ -124,26 +150,23 @@ class Cell(nn.Module):
         new_sizes = self.get_new_op_sizes(self.edges[key])
         shifted_edges = []
         edge_ops = [op.name for op in self.edges[key].ops if not op.zero]
-        new_ops = {k: v for k, v in commons.items() if k in edge_ops}
+        new_ops = {k: v for k, v in commons.items()}
 
         cond_i = lambda x, y: x >= j
         cond_j = lambda x, y: y >= j
-        edge_a = Edge(new_ops,
-                      new_sizes[1],
-                      self.op_sizes,
-                      self.edge_counter(),
-                      data_index,
-                      lineage=self.edges[key].lineage + [self.edges[key].name],
-                      mutate_flag=True)
-        edge_b = Edge(new_ops,
-                      new_sizes[0],
-                      self.op_sizes,
-                      self.edge_counter(),
-                      data_index,
-                      lineage=self.edges[key].lineage + [self.edges[key].name],
-                      mutate_flag=True)
+        edge_a = Edge(ops=new_ops,
+                      dim=new_sizes[1],
+                      op_size=self.op_sizes,
+                      name=self.edge_counter(),
+                      data_index=data_index,
+                      lineage=self.edges[key].lineage + [self.edges[key].name])
+        edge_b = Edge(ops=new_ops,
+                      dim=new_sizes[0],
+                      op_size=self.op_sizes,
+                      name=self.edge_counter(),
+                      data_index=data_index,
+                      lineage=self.edges[key].lineage + [self.edges[key].name])
         edge_c = self.edges[key]
-        edge_c.mutate_flag = True
         new_edges = [edge_a, edge_b]
 
         for tgt_key, tgt_edge in self.edges.items():
@@ -159,7 +182,7 @@ class Cell(nn.Module):
         shifted_edges.append([encode(i, j), edge_a])
         shifted_edges.append([encode(j, j+1), edge_b])
         shifted_edges.append([encode(i, j + 1), edge_c])
-        edge_c.growth_factor = []
+        edge_c.reset_growth_factor()
 
         self.edges = nn.ModuleDict()
         for k, edge in shifted_edges:
@@ -234,13 +257,21 @@ class Cell(nn.Module):
         else:
             return "Cell {:<2}: D: {} P:{}".format(self.name, dim, general_num_params(self))
 
-    def forward(self, x, drop_prob):
+    def forward(self, x, drop_prob, shap=None):
+        if shap is None:
+            shap = {}
+
         node_storage = {0: x}
         for edge, i, j, last in self.forward_iterator:
+            omit_this_edge = True if shap.get(edge, 1.) == 0. else False
             if node_storage.get(j) is None:
-                node_storage[j] = self.edges[edge](node_storage[i], drop_prob)
+                node_storage[j] = self.edges[edge](node_storage[i],
+                                                   drop_prob=drop_prob,
+                                                   omit_this_edge=omit_this_edge)
             else:
-                node_storage[j] += self.edges[edge](node_storage[i], drop_prob)
+                node_storage[j] += self.edges[edge](node_storage[i],
+                                                    drop_prob=drop_prob,
+                                                    omit_this_edge=omit_this_edge)
             if last:
                 del node_storage[i]
 
@@ -264,6 +295,8 @@ class Net(nn.Module):
         self.data_index = 0
         self.device = torch.device(hypers['device'])
         self.epoch = 0
+        self.shap_toggle = False
+
         self.hypers = hypers
 
         self.initializers = nn.ModuleList([initializer(self.input_dim[1], self.scale*2**i) for i in range(self.chains)])
@@ -296,7 +329,7 @@ class Net(nn.Module):
                 cell_sizes = {d: size_set[d] for d in cell_dims}
                 dim = cell_dims[0]
                 cell_name = "{}_{}".format(chain_str, cell_idx)
-                self.cells[chain_str].append(Cell(cell_name, dim, cell_sizes, mut_metric=self.mut_metric))
+                self.cells[chain_str].append(Cell(cell_name, dim, cell_sizes))
 
                 if not cell_idx == self.reductions:
                     if cell_idx:
@@ -339,7 +372,9 @@ class Net(nn.Module):
         for cell in self.all_cells(enum=False):
             for key, edge in cell.edges.items():
                 [op.log_analytics() for op in edge.ops]
-                edge.growth_factor += [op.get_growth_factor() for op in edge.ops if not op.zero]
+                gfs = [op.get_growth_factor() for op in edge.ops if not op.zero]
+                edge.growth_factor['grad'] += [gf['grad'] for gf in gfs]
+                edge.growth_factor['weight'] += [gf['weight'] for gf in gfs]
 
     def compile_pruner_stats(self):
         for cell in self.all_cells(enum=False):
@@ -350,36 +385,63 @@ class Net(nn.Module):
             for cell_idx, tower in self.towers[str(chain)].items():
                 tower.track_gates()
 
+    def get_n_edges(self):
+        idx = 0
+        for i, c, cell in self.all_cells():
+            for k, edge in cell.edges.items():
+                idx += 1
+        return idx
+
+    def compute_shap_values(self, samples):
+        n_edges = self.get_n_edges()
+        activation_vectors_train = np.zeros((1, n_edges))
+        activation_vectors_test = np.ones((1, n_edges))
+        explainer = shap.KernelExplainer(self.shap_forward, activation_vectors_train, link="logit")
+        shap_values = explainer.shap_values(activation_vectors_test, nsamples=samples)[0][0]
+        idx = 0
+        for i, c, cell in self.all_cells():
+            for k, edge in cell.edges.items():
+                edge.shap = shap_values[idx]
+                idx += 1
+
     def get_growth_factors(self):
         factors = {}
         for i, c, cell in self.all_cells():
             for k, edge in cell.edges.items():
-                if not edge.mutate_flag:
-                    factors[(encode(c, i, ","), k)] = edge.get_growth()
+                factors[(encode(c, i, ","), k)] = edge.get_growth()
         return factors
 
     def clear_grad(self):
         for cell in self.all_cells(enum=False):
             for e in cell.edges.values():
-                e.growth_factor = []
-                e.mutate_flag = False
+                e.reset_growth_factor()
 
     def mutate(self, n=1):
         mutations = []
         new_edges = []
         mutation_in_chain = set()
+
+        if self.epoch > 0:
+            self.compute_shap_values(100*self.get_n_edges())
+
         for i in range(n):
             growth_factors = self.get_growth_factors()
-            growth_sum = sum(list(growth_factors.values()))
-            if growth_sum != np.inf:
-                edges = sorted(list(growth_factors.items()), key=lambda x: x[1], reverse=mut_metric['which']=='max')
-                edges = [x[0] for x in edges]
-                loc = 0
-            else:
+            for k, v in growth_factors.items():
+                print(k, v[self.mut_metric['metric']])
+
+            if all(v[self.mut_metric['metric']] is None for v in growth_factors.values()):
                 edges = [edge for edge in growth_factors.keys() if edge[0] not in mutation_in_chain]
                 loc = np.random.choice(np.arange(len(edges)), replace=False)
                 mutation_in_chain.add(edges[loc][0])
-                print(edges[loc][0])
+            else:
+                growth_factors = {k: v[self.mut_metric['metric']] for k, v in growth_factors.items()}
+                nonnull_growth_factors = [(k, v) for k, v in growth_factors.items() if v is not None]
+                edges = sorted(nonnull_growth_factors,
+                               key=lambda x: x[1],
+                               reverse=self.mut_metric['sort_dir'] == 'max')
+                edges += [(k, v) for k, v in growth_factors.items() if v is None]
+                edges = [x[0] for x in edges]
+                loc = 0
             chain_cell, edge = edges[loc]
             chain, cell = decode(chain_cell, ",")
 
@@ -389,6 +451,7 @@ class Net(nn.Module):
             print(overfill, size, mut_size, size + mut_size)
             if not overfill and (size + mut_size) < self.gpu_space:
                 edges = self.cells[chain][cell].split_edge(edge, self.device, self.data_index)
+                self.cells[chain][cell].edges[edge].reset_growth_factor()
                 new_edges += edges
                 mutations.append((chain_cell, edge))
 
@@ -429,7 +492,10 @@ class Net(nn.Module):
         )
 
     def save_analytics(self):
-        super_g = self.plot_network()
+        if 0:
+            super_g = self.plot_network()
+        else:
+            super_g = None
         analytics = {}
         name_to_key = {}
         for chain in range(self.chains):
@@ -448,12 +514,20 @@ class Net(nn.Module):
 
         out_str = self.__str__()
 
-        with open('pickles/analytics', "wb") as f:
+        with open('pickles/analytics_{}'.format(self.model_id), "wb") as f:
             pkl.dump([super_g, analytics, name_to_key, out_str], f)
+
+    def set_pruners(self, state):
+        for i, c, cell in self.all_cells():
+            self.mut_sizes[encode(c, i, ",")] = {}
+            for k, e in cell.edges.items():
+                for op in e.ops:
+                    op.pruner.prune = state
 
     def reset_parameters(self):
         self.data_index = 0
         self.epoch = 0
+        self.clear_grad()
         for module in self.modules():
             if 'reset_parameters' in dir(module) and type(module) != type(self):
                 module.reset_parameters()
@@ -504,3 +578,52 @@ class Net(nn.Module):
                 outs.append(self.towers[chain_str][cell_idx](cell_out))
         return outs
 
+    def shap_forward(self, activation_vectors):
+        shap_outs = []
+        for i, activation_vector in enumerate(activation_vectors):
+            print("\r{:>8,}/{:<8,}".format(i, len(activation_vectors)), end="")
+            model_activation = {}
+            idx = 0
+            for cell_idx, chain, cell in self.all_cells():
+                model_activation[(chain, cell_idx)] = {}
+                for k, edge in cell.edges.items():
+                    model_activation[(chain, cell_idx)][k] = activation_vector[idx]
+                    idx += 1
+
+            corrects, divisor = 0, 0
+            self.eval()
+            with torch.no_grad():
+                for batch_idx, data in enumerate(self.data[0]):
+                    if len(data) == 3:
+                        data, metadata, target = data
+                    else:
+                        data, target = data
+                        metadata = None
+                    data, target = data.to(self.device), target.to(self.device)
+
+                    output = []
+                    orig_x = data
+                    for chain in range(self.chains):
+                        chain_str = str(chain)
+                        x = self.initializers[chain](orig_x)
+                        for i, cell in enumerate(self.cells[chain_str]):
+                            cell_out = cell(x, drop_prob=0., shap=model_activation[(chain, i)])
+                            cell_idx = str(i)
+                            if i != len(self.cells[chain_str]) - 1:
+                                x = self.scalers[chain_str][cell_idx](
+                                    self.residual_scalers[chain_str][cell_idx](x) + cell_out)
+                            output.append(self.towers[chain_str][cell_idx](cell_out))
+                    output = output[-1]
+                    corr, div = top_k_accuracy(output, target, top_k=[1])
+                    corrects += corr
+                    divisor += div
+
+                    if batch_idx > 3:
+                        break
+            score = corrects/divisor
+            if score == 1:
+                print('\n', "AAH", activation_vector, corrects, divisor, "\n")
+                score -= 1e-6
+            shap_outs.append(score)
+        self.train()
+        return np.array(shap_outs)

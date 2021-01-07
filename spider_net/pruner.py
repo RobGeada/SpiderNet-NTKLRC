@@ -76,7 +76,7 @@ class Pruner(nn.Module):
 
 # === OP + PRUNER COMBO =================================================================================
 class PrunableOperation(nn.Module):
-    def __init__(self, op_function, name, mem_size, c_in, stride, metric, start_idx=0, pruner_init=None, prune=True):
+    def __init__(self, op_function, name, mem_size, c_in, stride, start_idx=0, pruner_init=None, prune=True):
         super().__init__()
         self.op_function = op_function
         self.stride = stride
@@ -98,7 +98,8 @@ class PrunableOperation(nn.Module):
             self.pruner.track_gates()
 
     def get_growth_factor(self):
-        return self.metric(self)
+        return {'weight': self.pruner.weight.item(),
+                'grad': self.pruner.weight.grad.item()}
 
     def deadhead(self, prune_interval):
         if self.zero or not self.pruner.get_deadhead(prune_interval):
@@ -124,10 +125,9 @@ class PrunableOperation(nn.Module):
 
     def forward(self, x):
         if self.prune:
-            out = self.op(x) if self.zero else self.pruner(self.op(x))
+            return self.op(x) if self.zero else self.pruner(self.op(x))
         else:
-            out = self.op(x)
-        return out
+            return self.op(x)
 
 class PrunableTower(nn.Module):
     def __init__(self, position, in_size, out_size):

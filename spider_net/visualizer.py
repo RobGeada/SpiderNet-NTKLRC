@@ -314,7 +314,10 @@ class TrainAnimator:
     def animate(self, i):
         runs = proc_all_runs()
         full_runs = runs[runs['Epochs'].apply(lambda x: len(x)>1 and max(x)>512)].sort_values(by='LT Test Top-1 Max', ascending=False)
+        #full_runs = pd.concat([runs[852:858], runs[868:]])
 
+        full_runs = full_runs[full_runs['Epoch']==63].sort_values(by='LT Test Top-1 Max', ascending=False)
+        display(full_runs)
         compare = full_runs['LT Test Top-1'].values[0]
         compare_str = 'PR'
 
@@ -351,7 +354,7 @@ class TrainAnimator:
             labeled = list(labeled[labeled['Start Time'].apply(lambda x: x>=marker)]['ID'])
         else:
             labeled = list(full_runs.sort_values(by='Start Time',ascending=False)[:3]['ID'])
-        
+
         # plot previous runs
         w = 5, 15
         if epoch != self.curr_epoch:
@@ -359,7 +362,7 @@ class TrainAnimator:
             self.axes[1].clear()
             for i, (idx, run) in enumerate(full_runs.iterrows()):
                 # print(runs.iloc[-1])
-                if run['ID'] == curr_run['ID']:
+                if run['ID'] == curr_run['ID'] and run['Epoch']==curr_run['Epoch']:
                     continue
                 ys = run['LT Test Top-1']
                 if run['ID'] in labeled:
@@ -367,7 +370,7 @@ class TrainAnimator:
                                                 run['Start Time'],\
                                                 max(run['LT Test Top-1']))
                 else:
-                    label=None
+                    label = None
                 xs = np.array(list(run['Epochs'])[:len(ys)])
                 if min(xs) == 0 and max(xs) == 518:
                     xs += 82
@@ -403,13 +406,14 @@ class TrainAnimator:
                                                                                           rec_max,
                                                                                           rec_arg_max)
                 yrange = 100 - min(curr_run['LT Test Top-1'][-10:])
-                self.axes[0].text(-30, 101 + yrange / 15, text, fontsize=8, fontfamily='monospace')
+                #self.axes[0].text(-30, 101 + yrange / 15, text, fontsize=8, fontfamily='monospace')
+                self.axes[0].text(-1, 101 + yrange / 15, text, fontsize=8, fontfamily='monospace')
                 ys = curr_run['LT Test Top-1']
                 xs = list(curr_run['Epochs'])[:len(ys)]
                 label = "{} {}: {}".format(curr_run['ID'],curr_run['Start Time'],max(curr_run['LT Test Top-1'])) 
                 self.axes[0].plot(xs, ys, color='k', linewidth=1.5,label=label)
                 x_f, y_f = fit_curve(xs, ys)
-                if x_f is not None:
+                if 0: #x_f is not None:
                     self.axes[0].plot(x_f, y_f, color='k', alpha=.5, linewidth=1.5, linestyle='--')
                 
                 # self.axes[0].plot(xs, ys, color='k', linewidth=1.5)
@@ -419,7 +423,7 @@ class TrainAnimator:
                 self.axes[0].set_xlabel("Epoch", fontsize=8)
                 self.axes[0].set_ylabel("Accuracy", fontsize=8)
                 self.axes[0].legend()
-                ax_min, ax_max = min(90, int(min(curr_run['LT Test Top-1'][-10:]))), 100
+                ax_min, ax_max = min(50, int(min(curr_run['LT Test Top-1'][-10:]))), 100
                 if ax_max - ax_min > 20:
                     div = 5
                     ax_min = (ax_min // div) * div

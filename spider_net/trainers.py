@@ -140,11 +140,6 @@ def train(model, device, **kwargs):
 
     # === output ===============
     jn_print(prog_str)
-    for i, c, cell in model.all_cells():
-        print("== {},{} ==".format(c, i))
-        for key, edge in cell.edges.items():
-            print(" ", key, edge.get_growth())
-
     accuracy_string("Train", corrects, divisor, epoch_start, top_k, comp_ratio=None)
 
 
@@ -271,10 +266,10 @@ def full_train(model, kwargs):
 
         # prune ==============================
         if model.prune:
-            model.deadhead(kwargs['mod_interval']*len(model.data[0]))
+            model.deadhead(kwargs['prune_interval']*len(model.data[0]))
 
         # mutate
-        if epoch and (epoch-last_mutation) % kwargs['mod_interval'] == 0 and kwargs.get('mutate', True):
+        if epoch and (epoch-last_mutation) % kwargs['lr_schedule']['T'] == 0 and kwargs.get('mutate', True):
             mutations, new_edges = model.mutate(n=kwargs['n_mutations'])
             if len(mutations):
                 last_mutation = epoch

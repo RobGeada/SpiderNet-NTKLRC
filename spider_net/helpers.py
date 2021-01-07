@@ -250,9 +250,9 @@ def sizeof_fmt(num, spacing=True, suffix='B'):
 def cache_stats(human_readable=True, spacing=True):
     # returns current allocated torch memory
     if human_readable:
-        return sizeof_fmt(torch.cuda.memory_cached(), spacing)
+        return sizeof_fmt(torch.cuda.memory_reserved(), spacing)
     else:
-        return int(torch.cuda.memory_cached())
+        return int(torch.cuda.memory_reserved())
 
 
 def mem_stats(human_readable=True, spacing=True):

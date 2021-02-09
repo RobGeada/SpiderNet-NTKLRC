@@ -346,6 +346,7 @@ class Net(nn.Module):
         else:
             return (cell for chain in range(self.chains) for cell in self.cells[str(chain)])
 
+    
     def deadhead(self, prune_interval):
         old_params = general_num_params(self)
         deadheads = 0
@@ -578,6 +579,13 @@ class Net(nn.Module):
                 outs.append(self.towers[chain_str][cell_idx](cell_out))
         return outs
 
+    def set_shap_data(self, n_batches):
+        self.shap_data = []
+        for batch_idx, data in enumerate(self.data[0]):
+            self.shap_data.append(data)
+            if batch_idx > n_batches:
+                break
+    
     def shap_forward(self, activation_vectors):
         shap_outs = []
         for i, activation_vector in enumerate(activation_vectors):
@@ -593,7 +601,7 @@ class Net(nn.Module):
             corrects, divisor = 0, 0
             self.eval()
             with torch.no_grad():
-                for batch_idx, data in enumerate(self.data[0]):
+                for batch_idx, data in enumerate(self.shap_data):
                     if len(data) == 3:
                         data, metadata, target = data
                     else:
@@ -618,8 +626,6 @@ class Net(nn.Module):
                     corrects += corr
                     divisor += div
 
-                    if batch_idx > 3:
-                        break
             score = corrects/divisor
             if score == 1:
                 print('\n', "AAH", activation_vector, corrects, divisor, "\n")

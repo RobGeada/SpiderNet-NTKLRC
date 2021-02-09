@@ -1,6 +1,7 @@
 import datetime
 from IPython.display import display
 import time
+import pickle as pkl
 
 import torch.nn as nn
 import torch.optim as optim
@@ -246,6 +247,7 @@ def full_train(model, kwargs):
     # === init logging =======================
     training_logger.info("=== NEW FULL TRAIN ===")
     log_print("Starting at {}".format(datetime.datetime.now()))
+    model_start_time = "{}".format(datetime.datetime.now())
     training_logger.info(model.creation_string())
     criterion = nn.CrossEntropyLoss()
 
@@ -254,7 +256,7 @@ def full_train(model, kwargs):
     model.data_index = 0
     last_mutation = -1
 
-    for epoch in range(0, epochs):
+    for epoch in range(0, epochs):        
         training_logger.info("=== EPOCH {} ===".format(epoch))
 
         # train =========================
@@ -263,6 +265,15 @@ def full_train(model, kwargs):
         log_print(out_str)
         model.epoch += 1
         model.save_analytics()
+        
+        if epoch in [3,7,15,31,63,127,255,511]:
+            for n in [16, 64, 128, 256]:
+                model.compute_shap_values(n*model.get_n_edges())
+                growth_factors = model.get_growth_factors()
+            
+                with open('correlations/{}_{}_{}.pkl'.format(model_start_time, epoch, n), "wb") as f:
+                    pkl.dump(growth_factors, f)
+            
 
         # prune ==============================
         if model.prune:

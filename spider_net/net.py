@@ -629,14 +629,13 @@ class Net(nn.Module):
                     corrects += corr
                     divisor += div
                     
-        accuracies = []
-        values = np.array(list(accuracy_dict.values()))[:, 0, 0]
-        n_values = len(values)
-        for _ in range(10000):
-            accuracies.append(np.random.choice(values, n_values, replace=True).sum()/n_values)
-        score = np.mean(accuracies)
-                    
-            score = corrects/divisor
+            accuracies = []
+            values = np.array(list(accuracy_dict.values()))[:, 0, 0]
+            n_values = len(values)
+            for _ in range(10000):
+                accuracies.append(np.random.choice(values, n_values, replace=True).sum()/n_values)
+            score = np.mean(accuracies)
+            
             if score == 1:
                 score -= 1e-6
             elif score == 0:

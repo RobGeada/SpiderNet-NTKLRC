@@ -13,7 +13,7 @@ def bracket(ops, ops2=None):
 
         
 def dim_mod(dim, by_c, by_s):
-    return dim[0], int(dim[1]*by_c), dim[2]//by_s, dim[3]//by_s
+    return dim[0], int(dim[1]*by_c), math.ceil(dim[2]/by_s), math.ceil(dim[3]/by_s)
 
 
 # from https://github.com/quark0/darts/blob/master/cnn/utils.py

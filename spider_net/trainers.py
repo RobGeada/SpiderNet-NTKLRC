@@ -47,7 +47,7 @@ def top_k_accuracy(output, target, top_k):
         target_expand = target.unsqueeze(1).repeat(1,k,1,1)
         equal = torch.max(pred[:,:k,:,:].eq(target_expand),1)[0]
         correct[i] = torch.sum(equal)
-    return correct, len(target.view(-1))
+    return correct, len(target.view(-1)), equal
 
 
 def accuracy_string(prefix, corrects, divisor, t_start, top_k, comp_ratio=None, return_str=False):
@@ -117,7 +117,7 @@ def train(model, device, **kwargs):
         model.compile_pruner_stats()
         if (batch_idx % multiplier == 0) or (batch_idx == len(train_loader) - 1):
             kwargs['optimizer'].step()
-        corr, div = top_k_accuracy(outputs[-1], target, top_k=kwargs.get('top_k', [1]))
+        corr, div, _ = top_k_accuracy(outputs[-1], target, top_k=kwargs.get('top_k', [1]))
         corrects = corrects + corr
         divisor += div
 
@@ -163,7 +163,7 @@ def test(model, device, top_k=[1]):
                 metadata = None
             data, target = data.to(device), target.to(device)
             output = model.forward(data, drop_prob=0)[-1]
-            corr, div = top_k_accuracy(output, target, top_k=top_k)
+            corr, div, _ = top_k_accuracy(output, target, top_k=top_k)
             corrects = corrects + corr
             outputs.append(torch.argmax(output, 1).tolist())
             targets.append(target)

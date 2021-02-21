@@ -600,6 +600,7 @@ class Net(nn.Module):
 
             corrects, divisor = 0, 0
             self.eval()
+            accuracy_dict = {}
             with torch.no_grad():
                 for batch_idx, data in enumerate(self.shap_data):
                     if len(data) == 3:
@@ -622,14 +623,24 @@ class Net(nn.Module):
                                     self.residual_scalers[chain_str][cell_idx](x) + cell_out)
                             output.append(self.towers[chain_str][cell_idx](cell_out))
                     output = output[-1]
-                    corr, div = top_k_accuracy(output, target, top_k=[1])
+                    corr, div, equal = top_k_accuracy(output, target, top_k=[1])
+                    for idx in range(len(equal)):
+                        accuracy_dict["{}_{}".format(batch_idx, idx)] = equal[idx]
                     corrects += corr
                     divisor += div
-
+                    
+        accuracies = []
+        values = np.array(list(accuracy_dict.values()))[:, 0, 0]
+        n_values = len(values)
+        for _ in range(10000):
+            accuracies.append(np.random.choice(values, n_values, replace=True).sum()/n_values)
+        score = np.mean(accuracies)
+                    
             score = corrects/divisor
             if score == 1:
-                print('\n', "AAH", activation_vector, corrects, divisor, "\n")
                 score -= 1e-6
+            elif score == 0:
+                score += 1e-6
             shap_outs.append(score)
         self.train()
         return np.array(shap_outs)

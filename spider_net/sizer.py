@@ -35,7 +35,7 @@ if __name__ == '__main__':
                 if i==1:
                      start_mem = mem_stats(False)
                 sm = mem_stats(False)
-                op_f = PrunableOperation(f, op, mem_size=0, c_in=C, stride=stride, metric=None).cuda()
+                op_f = PrunableOperation(f, op, mem_size=0, c_in=C, stride=stride).cuda()
                 out = op_f(input_tensor)
                 tensors.append([op_f,out])
                 sizes.append(sizeof_fmt(mem_stats(False) - sm))

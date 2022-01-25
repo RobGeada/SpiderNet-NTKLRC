@@ -313,11 +313,11 @@ class TrainAnimator:
 
     def animate(self, i):
         runs = proc_all_runs()
-        full_runs = runs[runs['Epochs'].apply(lambda x: len(x)>1 and max(x)>512)].sort_values(by='LT Test Top-1 Max', ascending=False)
+        full_runs = runs[runs['Epochs'].apply(lambda x: len(x)>1 and max(x)>300)].sort_values(by='LT Test Top-1 Max', ascending=False)
         #full_runs = pd.concat([runs[852:858], runs[868:]])
 
-        full_runs = full_runs[full_runs['Epoch']==63].sort_values(by='LT Test Top-1 Max', ascending=False)
-        display(full_runs)
+        full_runs = full_runs.sort_values(by='LT Test Top-1 Max', ascending=False)
+        #display(full_runs)
         compare = full_runs['LT Test Top-1'].values[0]
         compare_str = 'PR'
 
@@ -386,7 +386,6 @@ class TrainAnimator:
             print("No log yet...")
         else:
             if epoch != self.curr_epoch:
-                print()
                 curr = curr_run['LT Test Top-1'][-1]
                 curr_max = max(curr_run['LT Test Top-1'])
                 curr_arg_max = np.argmax(curr_run['LT Test Top-1'])
@@ -419,7 +418,7 @@ class TrainAnimator:
                 # self.axes[0].plot(xs, ys, color='k', linewidth=1.5)
                 self.axes[0].set_ylim(min(curr_run['LT Test Top-1'][-10:]) - 1, 100)
                 self.axes[0].set_ylim(90, 100)
-                self.axes[0].set_title("CIFAR-10 Loss History, Bonsai Net")
+                self.axes[0].set_title("CIFAR-10 Loss History, SpiderNet")
                 self.axes[0].set_xlabel("Epoch", fontsize=8)
                 self.axes[0].set_ylabel("Accuracy", fontsize=8)
                 self.axes[0].legend()
@@ -436,9 +435,9 @@ class TrainAnimator:
                 self.axes[0].set_yticks(np.arange(ax_min, ax_max, div))
                 self.axes[0].tick_params(axis='both', which='major', labelsize=8)
                 self.curr_epoch = epoch
-                plt.savefig('/home/campus.ncl.ac.uk/b6070424/Dropbox/PhD/monitoring.png',
-                            facecolor="#263238",
-                            bbox_inches="tight")
+#                 plt.savefig('/home/campus.ncl.ac.uk/b6070424/Dropbox/PhD/monitoring.png',
+#                             facecolor="#263238",
+#                             bbox_inches="tight")
 
         prog = scrape(prog=True)
         if prog != self.prog:

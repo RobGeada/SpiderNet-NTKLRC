@@ -132,18 +132,17 @@ def op_sizer(dims, single=True):
 
 
 def compute_sizes(sizes=None):
+    size_set = {}
+    if 'op_sizes.pkl' in os.listdir('pickles'):
+        try:
+            with open("pickles/op_sizes.pkl", "rb") as f:
+                size_set = pkl.load(f)
+        except EOFError:
+            pass
     if sizes is not None:
         with open("pickles/op_sizes.pkl", "wb") as f:
-            size_set = op_sizer(sizes, single=False)
+            size_set.update(op_sizer(sizes, single=False))
             pkl.dump(size_set, f)
-    else:
-        size_set = {}
-        if 'op_sizes.pkl' in os.listdir('pickles'):
-            try:
-                with open("pickles/op_sizes.pkl", "rb") as f:
-                    size_set = pkl.load(f)
-            except EOFError:
-                pass
     return size_set
 
 
@@ -169,6 +168,15 @@ def cw_mod(dim, by):
 
 
 # === I/O HELPERS ======================================================================================================
+def rank(arr, flip=False):
+    temp = arr.argsort()
+    if flip:
+        temp = temp[::-1]
+    ranks = np.empty_like(temp)
+    ranks[temp] = np.arange(len(arr))
+    return ranks
+
+
 class Count:
     def __init__(self):
         self.i = 0

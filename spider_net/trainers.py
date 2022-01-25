@@ -47,7 +47,7 @@ def top_k_accuracy(output, target, top_k):
         target_expand = target.unsqueeze(1).repeat(1,k,1,1)
         equal = torch.max(pred[:,:k,:,:].eq(target_expand),1)[0]
         correct[i] = torch.sum(equal)
-    return correct, len(target.view(-1)), equal
+    return correct, len(target.view(-1)), equal.cpu().numpy()
 
 
 def accuracy_string(prefix, corrects, divisor, t_start, top_k, comp_ratio=None, return_str=False):
@@ -107,14 +107,14 @@ def train(model, device, **kwargs):
         def loss_f(x): return kwargs['criterion'](x, target)
         losses = [loss_f(output) for output in outputs[:-1]]
         final_loss = loss_f(outputs[-1])
-        loss = final_loss + .2 * sum(losses)
+        loss = final_loss + .4 * sum(losses)
 
         # end train step ======================
         loss = loss/multiplier
         loss.backward()
 
-        model.compile_growth_factors()
-        model.compile_pruner_stats()
+        if kwargs.get('prune', True):
+            model.compile_pruner_stats()
         if (batch_idx % multiplier == 0) or (batch_idx == len(train_loader) - 1):
             kwargs['optimizer'].step()
         corr, div, _ = top_k_accuracy(outputs[-1], target, top_k=kwargs.get('top_k', [1]))
@@ -264,33 +264,30 @@ def full_train(model, kwargs):
         out_str, outputs, targets, metas = test(model, kwargs['device'], top_k=kwargs.get('top_k', [1]))
         log_print(out_str)
         model.epoch += 1
-        model.save_analytics()
-        
-        if epoch in [3,7,15,31,63,127,255,511]:
-            for n in [16, 64, 128, 256]:
-                model.compute_shap_values(n*model.get_n_edges())
-                growth_factors = model.get_growth_factors()
-            
-                with open('correlations/{}_{}_{}.pkl'.format(model_start_time, epoch, n), "wb") as f:
-                    pkl.dump(growth_factors, f)
-            
 
+        if kwargs.get('mutate', False):
+            model.save_analytics()
+    
         # prune ==============================
-        if model.prune:
-            model.deadhead(kwargs['prune_interval']*len(model.data[0]))
+        if model.prune and kwargs.get('prune', True):
+            model.deadhead(kwargs['prune_interval'], kwargs['prune_interval']*len(model.data[0]))
 
-        # mutate
-        if epoch and (epoch-last_mutation) % kwargs['lr_schedule']['T'] == 0 and kwargs.get('mutate', True):
-            mutations, new_edges = model.mutate(n=kwargs['n_mutations'])
-            if len(mutations):
-                last_mutation = epoch
-            print("Performed {} mutations: {}".format(len(mutations), mutations))
-            lr_schedulers[epoch] = LRScheduler(epochs - epoch, kwargs['lr_schedule']['lr_max'])
-            new_params = [param for edge in new_edges for param in edge.parameters()]
-            optimizer.add_param_group({'params': new_params,
-                                       'lr': kwargs['lr_schedule']['lr_max'],
-                                       'key': epoch})
-            print()
+        if epoch == kwargs.get('break_after', -1):
+            break
+            
+            
+#         # mutate
+#         if epoch and (epoch-last_mutation) % kwargs['lr_schedule']['T'] == 0 and kwargs.get('mutate', True):
+#             mutations, new_edges = model.mutate(n=kwargs['n_mutations'])
+#             if len(mutations):
+#                 last_mutation = epoch
+#             print("Performed {} mutations: {}".format(len(mutations), mutations))
+#             lr_schedulers[epoch] = LRScheduler(epochs - epoch, kwargs['lr_schedule']['lr_max'])
+#             new_params = [param for edge in new_edges for param in edge.parameters()]
+#             optimizer.add_param_group({'params': new_params,
+#                                        'lr': kwargs['lr_schedule']['lr_max'],
+#                                        'key': epoch})
+#             print()
 
         # anneal =============================
         set_lr(optimizer, lr_schedulers)

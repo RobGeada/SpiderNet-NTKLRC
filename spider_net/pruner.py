@@ -14,7 +14,7 @@ class Pruner(nn.Module):
         super().__init__()
         if init is None:
             init = .01
-        elif init is 'off':
+        elif init == 'off':
             init = -1.
         elif type(init) is int:
             init = float(init)
@@ -22,31 +22,35 @@ class Pruner(nn.Module):
         self.mem_size = mem_size
         self.weight = nn.Parameter(torch.tensor([init]))
         self.m = m
-        self.weight_history = np.array([])
+        self.m_inv = 1/m
+        self.weight_history = [0]
 
     def __str__(self):
         return 'Pruner'
 
     def reset_parameters(self):
         self.weight = nn.Parameter(torch.tensor([self.init]))
-        self.weight_history = np.array([])
+        self.weight_history = [0]
 
     def num_params(self):
         # return number of differential parameters of input model
         return sum([np.prod(p.size()) for p in filter(lambda p: p.requires_grad, self.parameters())])
 
     def track_gates(self):
-        self.weight_history = np.append(self.weight_history, self.gate().item())
+        self.weight_history[-1] += self.gate().item()
 
-    def get_deadhead(self, prune_interval, verbose=False):
-        if len(self.weight_history) < prune_interval:
+
+    def get_deadhead(self, prune_epochs, prune_interval, verbose=False, force=False):
+        if len(self.weight_history) < prune_epochs and not force:
+            self.weight_history.append(0)
             return False
-        deadhead = (prune_interval * .25) > sum(self.weight_history[-prune_interval:])
+        deadhead = (prune_interval * .25) > sum(self.weight_history[-prune_epochs:]) or force
         if deadhead:
             self.switch_off()
-        
         if verbose:
             print(self.weight_history, deadhead)
+        self.weight_history = self.weight_history[-prune_epochs:]
+        self.weight_history.append(0)
         return deadhead
 
     def switch_off(self):
@@ -61,14 +65,15 @@ class Pruner(nn.Module):
         elif self.weight < -bound:
             self.weight.data = self.weight.data * -bound/self.weight.data
             #2print(pre, self.weight.item())
-            
+         
+    def saw(self):
+        return torch.remainder(self.weight, self.m_inv)
+        
     def gate(self):
         return self.weight > 0
-        #return torch.sigmoid(self.m * self.weight)
 
     def sg(self):
-        saw = (self.m * self.weight - torch.floor(self.m * self.weight)) / self.m
-        return saw + self.gate()
+        return self.saw() + self.gate()
 
     def forward(self, x):
         return self.sg() * x
@@ -81,12 +86,13 @@ class PrunableOperation(nn.Module):
         self.op_function = op_function
         self.stride = stride
         self.name = name
+        self.orig_name = name
         self.op = self.op_function(c_in, stride)
         self.zero = name == 'Zero'
         self.prune = prune
         if self.prune:
             self.pruner = Pruner(mem_size=mem_size, init=pruner_init)
-        if pruner_init is 'off':
+        if pruner_init == 'off':
             self.zero = True
             self.pruner.switch_off()
         self.analytics = {'pruner': [None]*start_idx,
@@ -99,13 +105,14 @@ class PrunableOperation(nn.Module):
 
     def get_growth_factor(self):
         return {'weight': self.pruner.weight.item(),
-                'grad': self.pruner.weight.grad.item()}
+                'grad': self.pruner.weight.grad.item() if self.pruner.weight.grad is not None else None}
 
-    def deadhead(self, prune_interval):
-        if self.zero or not self.pruner.get_deadhead(prune_interval):
+    def deadhead(self, prune_epochs, prune_interval, force=False):
+        if self.zero or not self.pruner.get_deadhead(prune_epochs, prune_interval, force=force):
             return 0
         else:
             self.op = Zero(self.stride)
+            self.name = "Zero"
             self.zero = True
             return 1
 
@@ -154,8 +161,6 @@ class PrunableTower(nn.Module):
 
     def forward(self, x):
         return self.ops(x)
-
-
 
 # === INPUT HANDLER FOR PRUNED CELL INPUTS
 class PrunableInputs(nn.Module):

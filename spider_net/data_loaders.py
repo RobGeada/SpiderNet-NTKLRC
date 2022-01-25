@@ -4,9 +4,9 @@ import os
 
 import torch
 from torchvision import datasets, transforms
-from data.gen_language_data import load_language_data
-from data.gen_multnist import load_multnist_data
-from data.gen_dolphin_data import load_dolphin_data
+#from data.gen_language_data import load_language_data
+#from data.gen_multnist import load_multnist_data
+#from data.gen_dolphin_data import load_dolphin_data
 
 # === set seeds ===
 '''
@@ -104,6 +104,10 @@ def load_data(batch_size, dataset, metadata=None):
                                          transforms.ToTensor(),
                                          transforms.Normalize(MEAN, STD)]
                                      ))
+        valid_size = 10*batch_size
+        train_subset  = torch.utils.data.Subset(train_data, range(0, len(train_data)-valid_size))
+        valid_data = torch.utils.data.Subset(train_data, range(len(train_data)-valid_size, len(train_data)))
+        train_data = train_subset
     elif dataset == "MNIST":
         train_data = datasets.MNIST(data_path+dataset,
                                     train=True, 
@@ -152,11 +156,15 @@ def load_data(batch_size, dataset, metadata=None):
 
     train_loader = torch.utils.data.DataLoader(train_data,
                                                batch_size=batch_size,
-                                               shuffle=True)
+                                               shuffle=True,
+                                               drop_last=True)
     test_loader = torch.utils.data.DataLoader(test_data,
                                               batch_size=batch_size,
                                               shuffle=False)
-    del train_data, test_data
+    valid_loader = torch.utils.data.DataLoader(valid_data,
+                                              batch_size=batch_size,
+                                              shuffle=False)
+    del train_data, test_data, valid_data
         
     # get/load dataset metadata
     for val in train_loader:
@@ -167,7 +175,7 @@ def load_data(batch_size, dataset, metadata=None):
         data_shape = img.shape
         break
 
-    return [train_loader, test_loader], data_shape
+    return [train_loader, test_loader, valid_loader], data_shape
 
 
 # === AUGMENTATION PREVIEW =============================================================================================

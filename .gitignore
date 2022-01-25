@@ -9,3 +9,9 @@ figures/**
 !spider-nas.ipynb
 !monitoring.ipynb
 *.onyx
+debug_copy.py
+graph.txt
+profiler.py
+correlations/**
+__pycache__/**
+.idea/*

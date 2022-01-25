@@ -84,7 +84,9 @@ class MaxPool(nn.Module):
 
     
 class SingleConv(nn.Module):
-    def __init__(self, c_in, c_out, kernel_size, stride, padding):
+    def __init__(self, c_in, c_out, kernel_size, stride, padding=None):
+        if padding is None:
+            padding = padsize(k=kernel_size, s=stride)
         super().__init__()
         if c_in == c_out:
             self.op = bracket([
@@ -136,7 +138,7 @@ class Scaler(nn.Module):
         super().__init__()
         self.c_in = c_in
         self.c_out = c_out
-        self.op = nn.Conv2d(self.c_in, self.c_out, kernel_size=1, stride=1)
+        self.op = SingleConv(c_in, c_out, kernel_size=1, stride=1, padding=padsize(k=1,s=1))
 
     def forward(self, x):
         return self.op(x)
@@ -148,13 +150,45 @@ def padder(c_in, c_out, stride=1):
     return MinimumIdentity(c_in, c_out, stride=stride)
 
 
-def initializer(c_in, c_out):
-    return SingleConv(c_in, c_out, kernel_size=1, stride=1, padding=padsize(k=1, s=1))
+def initializer(c_in, c_out, ksize=1):
+    return SingleConv(c_in, c_out, kernel_size=ksize, stride=1, padding=padsize(k=ksize, s=1))
 
 
 def normalizer(c_in):
     return nn.BatchNorm2d(c_in, affine=True)
 
+
+class Classifier(nn.Module):
+    def __init__(self, position, preserve_aux, in_size, out_size):
+        super().__init__()
+        self.in_size = in_size
+        self.out_size = out_size
+        self.position = position
+        self.preserve_aux = preserve_aux
+        
+        
+#         # bonsai paper version
+#         self.op = nn.Sequential(
+#             nn.AdaptiveAvgPool2d(in_size[1:][-1]),
+#             NNView(),
+#             nn.Linear(int(np.prod(in_size[1:])), out_size)
+#         )
+        
+        # darts version
+        if type(out_size) is list:
+            upsample = nn.Upsample(scale_factor=out_size[-1]/in_size[-1], mode='bilinear',align_corners=True)
+            self.op = nn.Sequential(
+                upsample,
+                nn.Conv2d(self.in_size[1],out_size[0],kernel_size=1,stride=1,padding=0),
+            )            
+        else:
+            self.op = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                NNView(),
+                nn.Linear(self.in_size[1], self.out_size)
+            )
+    def forward(self, x):
+        return self.op(x)
 
 # === SEARCH SPACE =====================================================================================================
 # commons = {
